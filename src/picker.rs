@@ -3,6 +3,7 @@
 use std::{
     env,
     io::{self, Read, Write},
+    time::Duration,
 };
 
 use image::{DynamicImage, Rgb};
@@ -63,7 +64,7 @@ impl Picker {
     /// entering alternate screen but before reading terminal events.
     ///
     /// # Example
-    /// ```no_run
+    /// ```rust
     /// use ratatui_image::picker::Picker;
     /// let mut picker = Picker::from_query_stdio();
     /// ```
@@ -73,7 +74,7 @@ impl Picker {
         let (is_tmux, tmux_proto) = detect_tmux_and_outer_protocol_from_env();
 
         // Write and read to stdin to query protocol capabilities and font-size.
-        let (capability_proto, font_size) = query_stdio_capabilities(is_tmux)?;
+        let (capability_proto, font_size) = query_with_timeout(is_tmux, Duration::from_secs(1))?;
 
         // If some env var says that we should try iTerm2, then disregard protocol-from-capabilities.
         let iterm2_proto = iterm2_from_env();
@@ -386,8 +387,6 @@ fn font_size_fallback() -> Option<FontSize> {
 }
 
 fn query_stdio_capabilities(is_tmux: bool) -> Result<(Option<ProtocolType>, Option<FontSize>)> {
-    enable_raw_mode()?;
-
     let (start, escape, end) = if is_tmux {
         ("\x1bPtmux;", "\x1b\x1b", "\x1b\\")
     } else {
@@ -431,9 +430,6 @@ fn query_stdio_capabilities(is_tmux: bool) -> Result<(Option<ProtocolType>, Opti
     if capabilities.is_empty() {
         return Err("no reply to graphics support query".into());
     }
-
-    // Reset to previous termios attributes.
-    disable_raw_mode()?;
 
     let mut proto = None;
     let mut font_size = None;
@@ -573,11 +569,37 @@ impl Parser {
     }
 }
 
+fn query_with_timeout(
+    is_tmux: bool,
+    timeout: Duration,
+) -> Result<(Option<ProtocolType>, Option<FontSize>)> {
+    use std::{sync::mpsc, thread};
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let _ = tx.send(
+            enable_raw_mode()
+                .and_then(|_| {
+                    let result = query_stdio_capabilities(is_tmux);
+                    // Always try to return to raw_mode.
+                    disable_raw_mode()?;
+                    result
+                })
+                .map_err(|dyn_err| io::Error::new(io::ErrorKind::Other, dyn_err.to_string())),
+        );
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => Ok(result?),
+        Err(err) => Err(err.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::assert_eq;
 
-    use crate::picker::{ParsedResponse, Parser, ProtocolType};
+    use crate::picker::{ParsedResponse, Parser, Picker, ProtocolType};
 
     #[test]
     fn test_cycle_protocol() {
@@ -590,6 +612,11 @@ mod tests {
         assert_eq!(proto, ProtocolType::Iterm2);
         proto = proto.next();
         assert_eq!(proto, ProtocolType::Halfblocks);
+    }
+
+    #[test]
+    fn test_from_query_stdio_no_hang() {
+        let _ = Picker::from_query_stdio();
     }
 
     #[test]
