@@ -35,7 +35,6 @@ jobs:
           override: true
       - uses: davidB/rust-cargo-make@v1
       - name: CI
-        if: matrix.platform != 'windows-latest'
         uses: actions-rs/cargo@v1
         with:
           command: make

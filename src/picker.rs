@@ -266,34 +266,25 @@ fn iterm2_from_env() -> Option<ProtocolType> {
 }
 
 #[cfg(not(windows))]
-static ORIGINAL_IN_MODE: std::sync::Mutex<Option<rustix::termios::Termios>> =
-    std::sync::Mutex::new(None);
-
-#[cfg(not(windows))]
-fn enable_raw_mode() -> Result<()> {
+fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
     use rustix::termios::{self, LocalModes, OptionalActions};
 
     let stdin = io::stdin();
     let mut termios = termios::tcgetattr(&stdin)?;
-    *ORIGINAL_IN_MODE.lock().unwrap() = Some(termios.clone());
+    let termios_original = termios.clone();
 
     // Disable canonical mode to read without waiting for Enter, disable echoing.
     termios.local_modes &= !LocalModes::ICANON;
     termios.local_modes &= !LocalModes::ECHO;
     termios::tcsetattr(&stdin, OptionalActions::Drain, &termios)?;
 
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn disable_raw_mode() -> Result<()> {
-    use rustix::termios::{self, OptionalActions};
-
-    if let Some(termios) = ORIGINAL_IN_MODE.lock().unwrap().as_ref() {
-        termios::tcsetattr(io::stdin(), OptionalActions::Now, termios)?;
-    }
-
-    Ok(())
+    Ok(move || {
+        Ok(termios::tcsetattr(
+            io::stdin(),
+            OptionalActions::Now,
+            &termios_original,
+        )?)
+    })
 }
 
 #[cfg(not(windows))]
@@ -313,10 +304,6 @@ fn font_size_fallback() -> Option<FontSize> {
 
     Some((x / cols, y / rows))
 }
-
-#[cfg(windows)]
-static ORIGINAL_IN_MODE: std::sync::Mutex<Option<windows::Win32::System::Console::CONSOLE_MODE>> =
-    std::sync::Mutex::new(None);
 
 #[cfg(windows)]
 use windows::Win32::Foundation::HANDLE;
@@ -350,7 +337,7 @@ fn current_in_handle() -> Result<HANDLE> {
 }
 
 #[cfg(windows)]
-fn enable_raw_mode() -> Result<()> {
+fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
     use windows::Win32::System::Console::{
         self, CONSOLE_MODE, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
     };
@@ -359,31 +346,23 @@ fn enable_raw_mode() -> Result<()> {
 
     let mut original_in_mode = CONSOLE_MODE::default();
     unsafe { Console::GetConsoleMode(in_handle, &mut original_in_mode) }?;
-    *ORIGINAL_IN_MODE.lock().unwrap() = Some(original_in_mode);
 
     let requested_in_modes = !ENABLE_ECHO_INPUT & !ENABLE_LINE_INPUT & !ENABLE_PROCESSED_INPUT;
     let in_mode = original_in_mode & requested_in_modes;
     unsafe { Console::SetConsoleMode(in_handle, in_mode) }?;
 
-    Ok(())
-}
+    Ok(move || {
+        let in_handle = current_in_handle()?;
 
-#[cfg(windows)]
-fn disable_raw_mode() -> Result<()> {
-    use windows::Win32::System::Console;
+        unsafe { Console::SetConsoleMode(in_handle, *original_in_mode) }?;
 
-    let in_handle = current_in_handle()?;
-
-    if let Some(in_mode) = ORIGINAL_IN_MODE.lock().unwrap().as_ref() {
-        unsafe { Console::SetConsoleMode(in_handle, *in_mode) }?;
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(windows)]
 fn font_size_fallback() -> Option<FontSize> {
-    Some((10, 20))
+    None
 }
 
 fn query_stdio_capabilities(is_tmux: bool) -> Result<(Option<ProtocolType>, Option<FontSize>)> {
@@ -497,13 +476,11 @@ impl Parser {
             }
             ParsedResponse::Sixel(_) => match next {
                 'c' => {
-                    self.data.push(next);
-
                     // This is just easier than actually parsing the string.
                     let is_sixel = self.data.contains(";4;")
                         || self.data.contains("?4;")
-                        || self.data.contains(";4c")
-                        || self.data.contains("?4c");
+                        || self.data.ends_with(";4")
+                        || self.data.ends_with("?4");
                     self.data = String::new();
                     self.sequence = ParsedResponse::Unknown;
                     return Some(ParsedResponse::Sixel(is_sixel));
@@ -579,7 +556,7 @@ fn query_with_timeout(
     thread::spawn(move || {
         let _ = tx.send(
             enable_raw_mode()
-                .and_then(|_| {
+                .and_then(|disable_raw_mode| {
                     let result = query_stdio_capabilities(is_tmux);
                     // Always try to return to raw_mode.
                     disable_raw_mode()?;
