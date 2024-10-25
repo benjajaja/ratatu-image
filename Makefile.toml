@@ -18,6 +18,12 @@ cargo make --profile termion ci
 cargo make --profile termwiz ci
 '''
 
+[tasks.ci-windows]
+script = '''
+cargo make ci
+cargo make --profile termwiz ci
+'''
+
 [tasks.ci]
 dependencies = [
   "fmt",
@@ -34,7 +40,7 @@ args = ["fmt", "--all", "--", "--check"]
 
 [tasks.clippy]
 command = "cargo"
-args = ["clippy", "--tests", "--all-features", "--", "-D", "warnings"]
+args = ["clippy", "--no-deps", "--tests", "--all-features", "--", "-D", "warnings"]
 
 [tasks.check]
 command = "cargo"
@@ -42,7 +48,7 @@ args = ["check", "--all-features"]
 
 [tasks.test]
 command = "cargo"
-args = ["test", "--all-features"]
+args = ["test", "--features", "${BACKEND}"]
 
 [tasks.readme]
 command = "cargo"

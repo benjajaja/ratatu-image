@@ -325,7 +325,7 @@ fn current_in_handle() -> Result<HANDLE> {
     use windows::{
         core::PCWSTR,
         Win32::{
-            Foundation::{GENERIC_READ, GENERIC_WRITE, HANDLE},
+            Foundation::{GENERIC_READ, GENERIC_WRITE},
             Storage::FileSystem::{
                 self, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
             },

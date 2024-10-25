@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - ci
   pull_request:
     branches:
       - master
@@ -39,9 +40,12 @@ jobs:
         with:
           command: make
           args: ci-all
-      - name: Build a windows binary
+      - name: Windows CI
         if: matrix.platform == 'windows-latest'
-        run: cargo build --bin ratatui-image --no-default-features --features crossterm,image-defaults
+        uses: actions-rs/cargo@v1
+        with:
+          command: make
+          args: ci-windows
 
   ensure-readme:
     name: Ensure readme is up-to-date
