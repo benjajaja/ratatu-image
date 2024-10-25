@@ -287,6 +287,49 @@ fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
     })
 }
 
+#[cfg(windows)]
+fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            Foundation::{GENERIC_READ, GENERIC_WRITE, HANDLE},
+            Storage::FileSystem::{
+                self, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+            },
+            System::Console::{
+                self, CONSOLE_MODE, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+            },
+        },
+    };
+
+    let utf16: Vec<u16> = "CONIN$\0".encode_utf16().collect();
+    let utf16_ptr: *const u16 = utf16.as_ptr();
+
+    let in_handle = unsafe {
+        FileSystem::CreateFileW(
+            PCWSTR(utf16_ptr),
+            (GENERIC_READ | GENERIC_WRITE).0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            HANDLE::default(),
+        )
+    }?;
+
+    let mut original_in_mode = CONSOLE_MODE::default();
+    unsafe { Console::GetConsoleMode(in_handle, &mut original_in_mode) }?;
+
+    let requested_in_modes = !ENABLE_ECHO_INPUT & !ENABLE_LINE_INPUT & !ENABLE_PROCESSED_INPUT;
+    let in_mode = original_in_mode & requested_in_modes;
+    unsafe { Console::SetConsoleMode(in_handle, in_mode) }?;
+
+    Ok(move || {
+        unsafe { Console::SetConsoleMode(in_handle, original_in_mode) }?;
+        Ok(())
+    })
+}
+
 #[cfg(not(windows))]
 fn font_size_fallback() -> Option<FontSize> {
     use rustix::termios::{self, Winsize};
@@ -303,61 +346,6 @@ fn font_size_fallback() -> Option<FontSize> {
     }
 
     Some((x / cols, y / rows))
-}
-
-#[cfg(windows)]
-use windows::Win32::Foundation::HANDLE;
-
-#[cfg(windows)]
-fn current_in_handle() -> Result<HANDLE> {
-    use windows::{
-        core::PCWSTR,
-        Win32::{
-            Foundation::{GENERIC_READ, GENERIC_WRITE},
-            Storage::FileSystem::{
-                self, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-            },
-        },
-    };
-
-    let utf16: Vec<u16> = "CONIN$\0".encode_utf16().collect();
-    let utf16_ptr: *const u16 = utf16.as_ptr();
-
-    Ok(unsafe {
-        FileSystem::CreateFileW(
-            PCWSTR(utf16_ptr),
-            (GENERIC_READ | GENERIC_WRITE).0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAGS_AND_ATTRIBUTES(0),
-            HANDLE::default(),
-        )
-    }?)
-}
-
-#[cfg(windows)]
-fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
-    use windows::Win32::System::Console::{
-        self, CONSOLE_MODE, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
-    };
-
-    let in_handle = current_in_handle()?;
-
-    let mut original_in_mode = CONSOLE_MODE::default();
-    unsafe { Console::GetConsoleMode(in_handle, &mut original_in_mode) }?;
-
-    let requested_in_modes = !ENABLE_ECHO_INPUT & !ENABLE_LINE_INPUT & !ENABLE_PROCESSED_INPUT;
-    let in_mode = original_in_mode & requested_in_modes;
-    unsafe { Console::SetConsoleMode(in_handle, in_mode) }?;
-
-    Ok(move || {
-        let in_handle = current_in_handle()?;
-
-        unsafe { Console::SetConsoleMode(in_handle, *original_in_mode) }?;
-
-        Ok(())
-    })
 }
 
 #[cfg(windows)]
